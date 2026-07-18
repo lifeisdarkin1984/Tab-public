@@ -256,7 +256,7 @@ def init_db():
             duration_days INT DEFAULT 30,
             max_accounts INT DEFAULT 0,
             max_layers INT DEFAULT 0,
-            features_json MEDIUMTEXT DEFAULT '{}',
+            features_json MEDIUMTEXT,
             is_active TINYINT DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
