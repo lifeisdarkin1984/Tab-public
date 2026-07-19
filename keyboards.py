@@ -489,6 +489,13 @@ def billing_kb():
     ])
 
 
+def no_plan_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 درخواست تست رایگان", callback_data="req_trial")],
+        [InlineKeyboardButton("💳 خرید اشتراک", callback_data="buy_plans")],
+    ])
+
+
 def plans_buy_kb(plans):
     """plans: [(id, name, price, duration_days), ...]"""
     kb = []

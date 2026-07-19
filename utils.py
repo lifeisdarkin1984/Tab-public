@@ -17,13 +17,12 @@ def get_account_owner(acc_id):
     r = q("SELECT admin_id FROM accounts WHERE id=%s", (acc_id,))
     return r[0][0] if r else None
 
-TRIAL_DAYS_DEFAULT = 3
-
 def ensure_tenant(uid, username="", full_name=""):
     """
     اولین باری که یه کاربر تلگرام /start می‌زنه، فضای مستقل خودش رو می‌گیره:
     یه ردیف تو admins و یه لایه‌ی پیش‌فرض (اگه از قبل نداشته باشه)، به‌علاوه‌ی
-    یه ردیف تو جدول tenants (همون دیتابیس پنل مدیریتی) با ۳ روز آزمایشی رایگان —
+    یه ردیف تو جدول tenants (همون دیتابیس پنل مدیریتی) با وضعیت 'none' —
+    یعنی بدون دسترسی، تا وقتی خودش درخواست تست بزنه و ادمین تاییدش کنه، یا پلن بخره.
     اگه از قبل تننت بوده، وضعیت/انقضاش دست‌نخورده می‌مونه.
     """
     u("INSERT INTO admins (id) VALUES(%s) ON DUPLICATE KEY UPDATE step='idle'", (uid,))
@@ -36,11 +35,10 @@ def ensure_tenant(uid, username="", full_name=""):
         u("UPDATE admins SET current_layer_id=%s WHERE id=%s AND current_layer_id IS NULL",
           (layers[0][0], uid))
 
-    trial_exp = int(time.time()) + TRIAL_DAYS_DEFAULT * 86400
     u("INSERT INTO tenants (telegram_id, username, full_name, status, expires_at) "
-      "VALUES (%s,%s,%s,'trial',%s) "
+      "VALUES (%s,%s,%s,'none',0) "
       "ON DUPLICATE KEY UPDATE username=%s, full_name=%s",
-      (uid, username, full_name, trial_exp, username, full_name))
+      (uid, username, full_name, username, full_name))
 
 
 def get_tenant_status(uid):
@@ -52,9 +50,9 @@ def get_tenant_status(uid):
 
 
 def is_tenant_locked(uid):
-    """True یعنی اشتراک تموم شده یا مسدوده — داده‌ها می‌مونن، فقط استفاده قفله"""
+    """True یعنی هنوز پلن/تستی نداره، اشتراک تموم شده، یا مسدوده — داده‌ها می‌مونن، فقط استفاده قفله"""
     status, expires_at = get_tenant_status(uid)
-    if status == "suspended":
+    if status in ("suspended", "none"):
         return True
     if expires_at and expires_at < int(time.time()):
         return True
@@ -215,19 +213,22 @@ async def detect_and_handle_bot_forced_join(uc, chat_id, original_text=None):
 
 # ─── محدودیت منابع (فاز ۴) ──────────────────────────────
 
-TRIAL_MAX_ACCOUNTS = 1
-TRIAL_MAX_LAYERS = 1
-
 def get_plan_limits(uid):
     """(max_accounts, max_layers) طبق پلن فعلی تننت؛ 0 یعنی نامحدود.
-    اگه هنوز پلنی نداره (آزمایشیه)، سقف پیش‌فرض دوره‌ی آزمایشی اعمال می‌شه."""
-    row = q("SELECT plan_id FROM tenants WHERE telegram_id=%s", (uid,))
-    plan_id = row[0][0] if row and row[0][0] else None
+    اگه پلن نداره ولی یه درخواست تست تاییدشده داره، سقف همون تستِ تاییدشده اعمال می‌شه
+    (که توسط ادمین از پنل، برای هر درخواست، تعیین شده — نه یه مقدار ثابت رایگان)."""
+    row = q("SELECT plan_id, trial_max_accounts, trial_max_layers FROM tenants "
+            "WHERE telegram_id=%s", (uid,))
+    if not row:
+        return 0, 0
+    plan_id, trial_max_accounts, trial_max_layers = row[0]
     if plan_id:
         p = q("SELECT max_accounts, max_layers FROM plans WHERE id=%s", (plan_id,))
         if p:
             return p[0][0], p[0][1]
-    return TRIAL_MAX_ACCOUNTS, TRIAL_MAX_LAYERS
+    if trial_max_accounts is not None:
+        return trial_max_accounts, trial_max_layers or 0
+    return 0, 0
 
 def count_active_accounts(uid):
     r = q("SELECT COUNT(*) FROM accounts WHERE admin_id=%s AND status='active'", (uid,))
