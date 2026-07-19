@@ -106,12 +106,38 @@ def init_panel_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             replied_at TIMESTAMP NULL
         )""",
+        # ── درخواست تست رایگان: مشتری درخواست می‌ده، ادمین از پنل تایید/رد می‌کنه ──
+        """CREATE TABLE IF NOT EXISTS trial_requests (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            tenant_id BIGINT,
+            status VARCHAR(20) DEFAULT 'pending',
+            days INT DEFAULT NULL,
+            max_accounts INT DEFAULT NULL,
+            max_layers INT DEFAULT NULL,
+            note VARCHAR(500) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            decided_at TIMESTAMP NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS trial_settings (
+            id INT PRIMARY KEY,
+            days INT DEFAULT 3,
+            max_accounts INT DEFAULT 1,
+            max_layers INT DEFAULT 1
+        )""",
+        # سقف‌های تستِ تاییدشده برای هر تننت (چون تست پلن واقعی نیست و plan_id نداره)
+        "ALTER TABLE tenants ADD COLUMN trial_max_accounts INT DEFAULT NULL",
+        "ALTER TABLE tenants ADD COLUMN trial_max_layers INT DEFAULT NULL",
     ]
     for s in stmts:
         try:
             cur.execute(s)
         except Exception as e:
             print(f"[Panel DB init] {e}")
+    try:
+        cur.execute("INSERT IGNORE INTO trial_settings (id, days, max_accounts, max_layers) "
+                     "VALUES (1, 3, 1, 1)")
+    except Exception as e:
+        print(f"[Panel DB init] {e}")
     db.commit()
     db.close()
     print("✅ Panel DB ready")
@@ -290,6 +316,79 @@ def reject_payment(payment_id, actor, note=""):
     p = get_payment(payment_id)
     tenant_id = p[1] if p else None
     log_action(actor, "reject_payment", tenant_id, note=f"payment_id={payment_id} {note}")
+    return tenant_id
+
+
+# ── درخواست تست رایگان ──
+
+def get_trial_settings():
+    r = q("SELECT days, max_accounts, max_layers FROM trial_settings WHERE id=1")
+    return r[0] if r else (3, 1, 1)
+
+
+def update_trial_settings_field(field, value):
+    allowed = {"days", "max_accounts", "max_layers"}
+    if field not in allowed:
+        return
+    u(f"UPDATE trial_settings SET {field}=%s WHERE id=1", (value,))
+
+
+def has_pending_trial_request(tenant_id):
+    r = q("SELECT id FROM trial_requests WHERE tenant_id=%s AND status='pending'", (tenant_id,))
+    return bool(r)
+
+
+def create_trial_request(tenant_id):
+    return u("INSERT INTO trial_requests (tenant_id, status) VALUES (%s,'pending')", (tenant_id,))
+
+
+def list_pending_trial_requests(offset=0, limit=8):
+    return q("SELECT id, tenant_id, created_at FROM trial_requests "
+              "WHERE status='pending' ORDER BY created_at ASC LIMIT %s OFFSET %s",
+              (limit, offset))
+
+
+def count_pending_trial_requests():
+    r = q("SELECT COUNT(*) FROM trial_requests WHERE status='pending'")
+    return r[0][0] if r else 0
+
+
+def get_trial_request(req_id):
+    r = q("SELECT id, tenant_id, status, days, max_accounts, max_layers, note, created_at "
+          "FROM trial_requests WHERE id=%s", (req_id,))
+    return r[0] if r else None
+
+
+def approve_trial_request(req_id, actor, days=None, max_accounts=None, max_layers=None):
+    """تایید درخواست تست: مقادیر ندادن یعنی از تنظیمات پیش‌فرض تست استفاده بشه"""
+    r = get_trial_request(req_id)
+    if not r or r[2] != "pending":
+        return None
+    tenant_id = r[1]
+    def_days, def_accounts, def_layers = get_trial_settings()
+    days = days if days is not None else def_days
+    max_accounts = max_accounts if max_accounts is not None else def_accounts
+    max_layers = max_layers if max_layers is not None else def_layers
+
+    new_exp = int(time.time()) + days * 86400
+    u("UPDATE tenants SET status='trial', expires_at=%s, "
+      "trial_max_accounts=%s, trial_max_layers=%s WHERE telegram_id=%s",
+      (new_exp, max_accounts, max_layers, tenant_id))
+    u("UPDATE trial_requests SET status='approved', days=%s, max_accounts=%s, max_layers=%s, "
+      "decided_at=NOW() WHERE id=%s", (days, max_accounts, max_layers, req_id))
+    log_action(actor, "approve_trial", tenant_id,
+               note=f"req_id={req_id} days={days} accounts={max_accounts} layers={max_layers}")
+    return tenant_id, new_exp, days, max_accounts, max_layers
+
+
+def reject_trial_request(req_id, actor, note=""):
+    r = get_trial_request(req_id)
+    if not r or r[2] != "pending":
+        return None
+    tenant_id = r[1]
+    u("UPDATE trial_requests SET status='rejected', note=%s, decided_at=NOW() WHERE id=%s",
+      (note, req_id))
+    log_action(actor, "reject_trial", tenant_id, note=f"req_id={req_id} {note}")
     return tenant_id
 
 

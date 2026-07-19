@@ -6,6 +6,8 @@ def home_kb():
         [B("👥 مدیریت مشتری‌ها", callback_data="pnl_tenants:0")],
         [B("📦 مدیریت پلن‌ها", callback_data="pnl_plans")],
         [B("💳 پرداخت‌های در انتظار", callback_data="pnl_payments:0")],
+        [B("🎁 درخواست‌های تست", callback_data="pnl_trials:0")],
+        [B("⚙️ تنظیمات تست رایگان", callback_data="pnl_trialset")],
         [B("🎫 تیکت‌های پشتیبانی", callback_data="pnl_tickets:0")],
         [B("📢 اطلاع‌رسانی همگانی", callback_data="pnl_broadcast")],
         [B("📊 پرمصرف‌ترین مشتری‌ها", callback_data="pnl_top_usage")],
@@ -39,6 +41,7 @@ def payment_detail_kb(payment_id):
 
 
 STATUS_EMOJI = {
+    "none": "🚪",
     "trial": "🆕",
     "active": "✅",
     "suspended": "⛔️",
@@ -108,6 +111,42 @@ def plan_picker_kb(rows, telegram_id):
 
 def cancel_kb(back_callback):
     return InlineKeyboardMarkup([[B("◀️ انصراف", callback_data=back_callback)]])
+
+
+# ── درخواست تست رایگان ──
+
+def trials_list_kb(rows, offset, limit, total):
+    kb = []
+    for req_id, tenant_id, created_at in rows:
+        kb.append([B(f"🎁 مشتری {tenant_id}", callback_data=f"pnl_trial:{req_id}")])
+    nav = []
+    if offset > 0:
+        nav.append(B("◀️ قبلی", callback_data=f"pnl_trials:{max(0, offset - limit)}"))
+    if offset + limit < total:
+        nav.append(B("بعدی ▶️", callback_data=f"pnl_trials:{offset + limit}"))
+    if nav:
+        kb.append(nav)
+    kb.append([B("🏠 بازگشت به داشبورد", callback_data="pnl_home")])
+    return InlineKeyboardMarkup(kb)
+
+
+def trial_detail_kb(req_id, def_days, def_accounts, def_layers):
+    return InlineKeyboardMarkup([
+        [B(f"✅ تایید با پیش‌فرض ({def_days} روز / {def_accounts} اکانت / {def_layers} لایه)",
+           callback_data=f"pnl_trial_approve_default:{req_id}")],
+        [B("✏️ تنظیم دستی و تایید", callback_data=f"pnl_trial_custom:{req_id}")],
+        [B("❌ رد درخواست", callback_data=f"pnl_trial_reject:{req_id}")],
+        [B("◀️ بازگشت به لیست", callback_data="pnl_trials:0")],
+    ])
+
+
+def trial_settings_kb(days, max_accounts, max_layers):
+    return InlineKeyboardMarkup([
+        [B(f"⏳ مدت: {days} روز", callback_data="pnl_trialset_edit:days")],
+        [B(f"📱 سقف اکانت: {max_accounts}", callback_data="pnl_trialset_edit:max_accounts")],
+        [B(f"🗂 سقف لایه: {max_layers}", callback_data="pnl_trialset_edit:max_layers")],
+        [B("🏠 بازگشت به داشبورد", callback_data="pnl_home")],
+    ])
 
 
 # ── تیکت پشتیبانی ──

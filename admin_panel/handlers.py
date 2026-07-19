@@ -26,15 +26,19 @@ def _dashboard_text():
     counts = db.count_tenants()
     total = sum(counts.values())
     active_accounts = db.count_total_active_accounts()
+    pending_trials = db.count_pending_trial_requests()
     txt = (
         "🖥 **داشبورد پنل مدیریت Tabchiz | تبچیز (نسخه آزمایشی)**\n\n"
         f"👥 کل مشتری‌ها: {total}\n"
         f"✅ فعال: {counts.get('active', 0)}\n"
         f"🆕 آزمایشی: {counts.get('trial', 0)}\n"
+        f"🚪 بدون پلن/تست: {counts.get('none', 0)}\n"
         f"⛔️ مسدود: {counts.get('suspended', 0)}\n"
         f"⌛️ منقضی: {counts.get('expired', 0)}\n\n"
         f"📱 اکانت‌های تلگرامی فعال (کل سرور): **{active_accounts}**"
     )
+    if pending_trials:
+        txt += f"\n\n🎁 درخواست تست در انتظار: **{pending_trials}**"
     if MAX_TOTAL_ACCOUNTS:
         pct = int(active_accounts * 100 / MAX_TOTAL_ACCOUNTS) if MAX_TOTAL_ACCOUNTS else 0
         txt += f" / {MAX_TOTAL_ACCOUNTS} ({pct}%)"
@@ -334,6 +338,118 @@ def register(app):
             await cq.message.edit_text(text, reply_markup=kb.ticket_detail_kb(tid, status))
             return
 
+        if data.startswith("pnl_trials:"):
+            offset = int(data.split(":")[1])
+            total = db.count_pending_trial_requests()
+            rows = db.list_pending_trial_requests(offset=offset, limit=PAGE_LIMIT)
+            if not rows and offset == 0:
+                await cq.message.edit_text(
+                    "هیچ درخواست تست در انتظاری وجود نداره.",
+                    reply_markup=kb.trials_list_kb([], 0, PAGE_LIMIT, 0)
+                )
+                return
+            await cq.message.edit_text(
+                "🎁 **درخواست‌های تست در انتظار**",
+                reply_markup=kb.trials_list_kb(rows, offset, PAGE_LIMIT, total)
+            )
+            return
+
+        if data.startswith("pnl_trial_approve_default:"):
+            req_id = int(data.split(":")[1])
+            result = db.approve_trial_request(req_id, OWNER_ID)
+            if not result:
+                await cq.answer("این درخواست قبلاً پردازش شده یا پیدا نشد.", show_alert=True)
+                return
+            tenant_id, new_exp, days, max_accounts, max_layers = result
+            await cq.answer("تایید شد ✅")
+            asyncio.create_task(notify_tenant(
+                tenant_id,
+                f"🎁 **درخواست تست شما تایید شد!**\n\n"
+                f"مدت: {days} روز — تا {_fmt_ts(new_exp)}\n"
+                f"سقف اکانت: {max_accounts} | سقف لایه: {max_layers}\n\n"
+                f"برای شروع: /add_account"
+            ))
+            await cq.message.edit_text(
+                f"✅ درخواست #{req_id} با پیش‌فرض تایید شد.",
+                reply_markup=kb.trials_list_kb(db.list_pending_trial_requests(0, PAGE_LIMIT), 0,
+                                                PAGE_LIMIT, db.count_pending_trial_requests())
+            )
+            return
+
+        if data.startswith("pnl_trial_custom:"):
+            req_id = int(data.split(":")[1])
+            db.set_panel_step(OWNER_ID, "awaiting_trial_custom", str(req_id))
+            await cq.message.edit_text(
+                "مقادیر دلخواه رو با این فرمت بفرست:\n"
+                "`روز|سقف‌اکانت|سقف‌لایه`\n"
+                "مثال: `7|2|1`",
+                reply_markup=kb.cancel_kb(f"pnl_trial:{req_id}")
+            )
+            return
+
+        if data.startswith("pnl_trial_reject:"):
+            req_id = int(data.split(":")[1])
+            tenant_id = db.reject_trial_request(req_id, OWNER_ID)
+            if not tenant_id:
+                await cq.answer("این درخواست پیدا نشد.", show_alert=True)
+                return
+            await cq.answer("رد شد ❌")
+            asyncio.create_task(notify_tenant(
+                tenant_id,
+                "❌ **درخواست تست رایگان شما تایید نشد.**\n\n"
+                "می‌تونید مستقیم اشتراک خریداری کنید یا با پشتیبانی تماس بگیرید."
+            ))
+            await cq.message.edit_text(
+                f"❌ درخواست #{req_id} رد شد.",
+                reply_markup=kb.trials_list_kb(db.list_pending_trial_requests(0, PAGE_LIMIT), 0,
+                                                PAGE_LIMIT, db.count_pending_trial_requests())
+            )
+            return
+
+        if data.startswith("pnl_trial:"):
+            req_id = int(data.split(":")[1])
+            r = db.get_trial_request(req_id)
+            if not r:
+                await cq.answer("این درخواست پیدا نشد.", show_alert=True)
+                return
+            _, tenant_id, status, days, max_accounts, max_layers, note, created_at = r
+            t = db.get_tenant(tenant_id)
+            label = (t[2] or t[1] or str(tenant_id)) if t else str(tenant_id)
+            def_days, def_accounts, def_layers = db.get_trial_settings()
+            text = (
+                f"🎁 **درخواست تست #{req_id}**\n\n"
+                f"مشتری: {label} (`{tenant_id}`)\n"
+                f"وضعیت: {status}\n"
+                f"تاریخ: {created_at}\n"
+            )
+            await cq.message.edit_text(
+                text, reply_markup=kb.trial_detail_kb(req_id, def_days, def_accounts, def_layers)
+            )
+            return
+
+        if data == "pnl_trialset":
+            days, max_accounts, max_layers = db.get_trial_settings()
+            await cq.message.edit_text(
+                "⚙️ **تنظیمات پیش‌فرض تست رایگان**\n\n"
+                "این مقادیر وقتی استفاده می‌شن که ادمین درخواست رو با «تایید پیش‌فرض» بزنه.",
+                reply_markup=kb.trial_settings_kb(days, max_accounts, max_layers)
+            )
+            return
+
+        if data.startswith("pnl_trialset_edit:"):
+            field = data.split(":")[1]
+            db.set_panel_step(OWNER_ID, "awaiting_trialset_field", field)
+            field_fa = {
+                "days": "مدت پیش‌فرض تست (روز)",
+                "max_accounts": "سقف پیش‌فرض اکانت",
+                "max_layers": "سقف پیش‌فرض لایه",
+            }.get(field, field)
+            await cq.message.edit_text(
+                f"{field_fa} رو بفرست (فقط عدد):",
+                reply_markup=kb.cancel_kb("pnl_trialset")
+            )
+            return
+
         if data == "pnl_broadcast":
             plans = db.list_plans(only_active=True)
             await cq.message.edit_text(
@@ -493,6 +609,49 @@ def register(app):
             db.clear_panel_step(OWNER_ID)
             p = db.get_plan(plan_id)
             await message.reply("بروزرسانی شد ✅", reply_markup=kb.plan_detail_kb(plan_id, p[7]))
+            return
+
+        if step == "awaiting_trial_custom":
+            req_id = int(step_data)
+            parts = [p.strip() for p in txt.split("|")]
+            if len(parts) != 3:
+                await message.reply("فرمت درست نیست. مثال:\n`7|2|1`")
+                return
+            try:
+                days, max_accounts, max_layers = (int(p) for p in parts)
+            except ValueError:
+                await message.reply("هر سه مقدار باید عدد باشن.")
+                return
+            db.clear_panel_step(OWNER_ID)
+            result = db.approve_trial_request(req_id, OWNER_ID, days, max_accounts, max_layers)
+            if not result:
+                await message.reply("این درخواست قبلاً پردازش شده یا پیدا نشد.", reply_markup=kb.home_kb())
+                return
+            tenant_id, new_exp, days, max_accounts, max_layers = result
+            asyncio.create_task(notify_tenant(
+                tenant_id,
+                f"🎁 **درخواست تست شما تایید شد!**\n\n"
+                f"مدت: {days} روز — تا {_fmt_ts(new_exp)}\n"
+                f"سقف اکانت: {max_accounts} | سقف لایه: {max_layers}\n\n"
+                f"برای شروع: /add_account"
+            ))
+            await message.reply(f"✅ درخواست #{req_id} با مقادیر دستی تایید شد.",
+                                 reply_markup=kb.home_kb())
+            return
+
+        if step == "awaiting_trialset_field":
+            field = step_data
+            try:
+                value = int(txt)
+            except ValueError:
+                await message.reply("فقط عدد بفرست.")
+                return
+            db.update_trial_settings_field(field, value)
+            db.log_action(OWNER_ID, "edit_trial_settings", note=f"{field}={value}")
+            db.clear_panel_step(OWNER_ID)
+            days, max_accounts, max_layers = db.get_trial_settings()
+            await message.reply("بروزرسانی شد ✅",
+                                 reply_markup=kb.trial_settings_kb(days, max_accounts, max_layers))
             return
 
         if step == "awaiting_ticket_reply":
