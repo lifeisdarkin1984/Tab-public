@@ -6,11 +6,17 @@ from database import q, u
 from utils import (API_ID, API_HASH, save_account, set_step, clear_step,
                     ensure_tenant, get_tenant_status, is_tenant_locked,
                     get_plan_limits, count_active_accounts)
-from keyboards import back_kb, main_menu_kb, layers_kb, billing_kb
+from keyboards import back_kb, main_menu_kb, layers_kb, billing_kb, no_plan_kb
 
 pending_clients = {}
 
 def _locked_message(status, expires_at):
+    if status == "none":
+        return (
+            "👋 **هنوز اشتراک یا تست فعالی ندارید.**\n\n"
+            "می‌تونید یه دوره‌ی تست رایگان درخواست بدید (بعد از تایید ادمین فعال می‌شه) "
+            "یا مستقیم یکی از پلن‌ها رو بخرید."
+        )
     if status == "suspended":
         return "⛔️ **دسترسی شما مسدود شده.**\n\nبرای پیگیری با پشتیبانی تماس بگیرید."
     from datetime import datetime
@@ -19,6 +25,10 @@ def _locked_message(status, expires_at):
         f"⌛️ **اشتراک شما در تاریخ {exp_txt} به پایان رسیده.**\n\n"
         "داده‌ها و تنظیمات‌تون محفوظه؛ فقط با تمدید اشتراک دوباره فعال می‌شه."
     )
+
+
+def _locked_kb(status):
+    return no_plan_kb() if status == "none" else billing_kb()
 
 def register(app):
 
@@ -32,7 +42,7 @@ def register(app):
         if is_tenant_locked(uid):
             status, expires_at = get_tenant_status(uid)
             await message.reply(_locked_message(status, expires_at),
-                                 reply_markup=billing_kb())
+                                 reply_markup=_locked_kb(status))
             return
 
         layers = q(
@@ -51,7 +61,7 @@ def register(app):
         uid = message.from_user.id
         if is_tenant_locked(uid):
             status, expires_at = get_tenant_status(uid)
-            await message.reply(_locked_message(status, expires_at), reply_markup=billing_kb())
+            await message.reply(_locked_message(status, expires_at), reply_markup=_locked_kb(status))
             return
         max_accounts, _ = get_plan_limits(uid)
         if max_accounts and count_active_accounts(uid) >= max_accounts:
@@ -74,7 +84,7 @@ def register(app):
         uid = message.from_user.id
         if is_tenant_locked(uid):
             status, expires_at = get_tenant_status(uid)
-            await message.reply(_locked_message(status, expires_at), reply_markup=billing_kb())
+            await message.reply(_locked_message(status, expires_at), reply_markup=_locked_kb(status))
             return
         cur = q("SELECT current_layer_id FROM admins WHERE id=%s", (uid,))
         layer_id = cur[0][0] if cur else None

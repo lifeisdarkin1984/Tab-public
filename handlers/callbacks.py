@@ -20,7 +20,7 @@ CARD_HOLDER = os.environ.get("CARD_HOLDER", "")
 # این callback dataها حتی برای تننت قفل‌شده (اشتراک تموم‌شده/مسدود) هم مجازن —
 # چون خودِ مسیر خرید/تمدید اشتراکه
 _ALLOWED_WHEN_LOCKED_PREFIXES = ("buy_",)
-_ALLOWED_WHEN_LOCKED_EXACT = {"back_main", "support_start"}
+_ALLOWED_WHEN_LOCKED_EXACT = {"back_main", "support_start", "req_trial"}
 
 
 def register(app):
@@ -47,6 +47,34 @@ def register(app):
         try:
             if d == "back_main":
                 await cb.message.edit_text("یک گزینه را انتخاب کنید:", reply_markup=main_menu_kb())
+
+            elif d == "req_trial":
+                status, _ = get_tenant_status(uid)
+                if status != "none":
+                    await cb.answer("شما همین الان هم پلن/تست فعال یا در انتظار دارید.", show_alert=True)
+                else:
+                    pending = q("SELECT id FROM trial_requests WHERE tenant_id=%s AND status='pending'",
+                                (uid,))
+                    if pending:
+                        await cb.answer("درخواست تست قبلی‌تون هنوز در دست بررسیه.", show_alert=True)
+                    else:
+                        u("INSERT INTO trial_requests (tenant_id, status) VALUES (%s,'pending')", (uid,))
+                        await cb.message.edit_text(
+                            "✅ **درخواست تست رایگان شما ثبت شد.**\n\n"
+                            "بعد از تایید ادمین، پیام فعال‌سازی رو دریافت می‌کنید.",
+                            reply_markup=billing_kb()
+                        )
+                        if OWNER_ID:
+                            try:
+                                uname = f"@{cb.from_user.username}" if cb.from_user.username else str(uid)
+                                await client.send_message(
+                                    OWNER_ID,
+                                    f"🎁 **درخواست تست جدید**\n\n"
+                                    f"از: {uname} (`{uid}`)\n\n"
+                                    f"برای تایید/رد: پنل مدیریتی → 🎁 درخواست‌های تست"
+                                )
+                            except Exception:
+                                pass
 
             elif d == "buy_plans":
                 plans = q("SELECT id,name,price,duration_days FROM plans "
